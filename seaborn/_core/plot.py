@@ -13,10 +13,9 @@ import matplotlib.pyplot as plt  # TODO defer import into Plot.show()
 from seaborn._compat import set_scale_obj
 from seaborn._core.data import PlotData
 from seaborn._core.rules import categorical_order
-from seaborn._core.scales import ScaleSpec
+from seaborn._core.scales import ScaleSpec, Scale
 from seaborn._core.subplots import Subplots
 from seaborn._core.groupby import GroupBy
-from seaborn._core.scales import Scale
 from seaborn._core.properties import PROPERTIES, Property
 
 from typing import TYPE_CHECKING
@@ -793,7 +792,7 @@ class Plotter:
                         groupby = GroupBy(order)
                         df = move(df, groupby, orient)
 
-                df = self._unscale_coords(subplots, df)
+                df = self._unscale_coords(subplots, df, orient)
 
                 grouping_vars = mark.grouping_vars + default_grouping_vars
                 split_generator = self._setup_split_generator(
@@ -833,7 +832,8 @@ class Plotter:
     def _unscale_coords(
         self,
         subplots: list[dict],  # TODO retype with a SubplotSpec or similar
-        df: DataFrame
+        df: DataFrame,
+        orient: Literal["x", "y"],
     ) -> DataFrame:
 
         coord_cols = [c for c in df if re.match(r"^[xy]\D*$", c)]
@@ -845,10 +845,28 @@ class Plotter:
         )
 
         for subplot in subplots:
-            axes_df = self._filter_subplot_data(df, subplot)[coord_cols]
+            subplot_df = self._filter_subplot_data(df, subplot)
+            axes_df = subplot_df[coord_cols]
             for var, values in axes_df.items():
-                scale = subplot[f"{var[0]}scale"]
-                out_df.loc[values.index, var] = scale.invert_transform(axes_df[var])
+                scale = subplot.get(f"{var[0]}scale", None)
+                if scale is not None:
+                    # TODO this is a hack to work around issue encountered while
+                    # prototyping the Hist stat. We need to solve scales for coordinate
+                    # variables defined as part of the stat transform
+                    values = scale.invert_transform(values)
+                out_df.loc[values.index, var] = values
+
+
+            # TODO XXX HACK HACK
+            if "width" in subplot_df:
+                scale = subplot[f"{orient}scale"]
+                width = subplot_df["width"]
+                new_width = (
+                    scale.invert_transform(axes_df[orient] + width / 2)
+                    - scale.invert_transform(axes_df[orient] - width / 2)
+                )
+                # TODO don't mutate
+                out_df.loc[values.index, "width"] = new_width
 
         return out_df
 
