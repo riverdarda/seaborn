@@ -100,16 +100,17 @@ class GroupBy:
 
     def apply(
         self, data: DataFrame, func: Callable[[DataFrame], DataFrame],
+        *args, **kwargs,
     ) -> DataFrame:
         """Apply a DataFrame -> DataFrame mapping to each group."""
         grouper, groups = self._get_groups(data)
 
         if not grouper:
-            return self._reorder_columns(func(data), data)
+            return self._reorder_columns(func(data, *args, **kwargs), data)
 
         parts = {}
         for key, part_df in data.groupby(grouper, sort=False):
-            parts[key] = func(part_df)
+            parts[key] = func(part_df, *args, **kwargs)
         stack = []
         for key in groups:
             if key in parts:

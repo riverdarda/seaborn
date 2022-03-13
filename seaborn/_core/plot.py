@@ -749,8 +749,6 @@ class Plotter:
 
             with (
                 mark.use(self._scales, orient)
-                # TODO this doesn't work if stat is None
-                # stat.use(mappings=self._mappings, orient=orient),
             ):
 
                 df = self._scale_coords(subplots, df)
@@ -768,7 +766,7 @@ class Plotter:
                     if stat.group_by_orient:
                         grouping_vars.insert(0, orient)
                     groupby = GroupBy({var: get_order(var) for var in grouping_vars})
-                    df = stat(df, groupby, orient)
+                    df = stat(df, groupby, orient, scales)
 
                 # TODO get this from the Mark, otherwise scale by natural spacing?
                 # (But what about sparse categoricals? categorical always width/height=1
