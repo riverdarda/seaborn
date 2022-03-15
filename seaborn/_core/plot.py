@@ -851,11 +851,12 @@ class Plotter:
                     # TODO this is a hack to work around issue encountered while
                     # prototyping the Hist stat. We need to solve scales for coordinate
                     # variables defined as part of the stat transform
+                    # Plan is to merge as is and then do a bigger refactor to
+                    # the timing / logic of scale setup
                     values = scale.invert_transform(values)
                 out_df.loc[values.index, var] = values
 
-
-            # TODO XXX HACK HACK
+            """ TODO commenting this out to merge Hist work before bigger refactor
             if "width" in subplot_df:
                 scale = subplot[f"{orient}scale"]
                 width = subplot_df["width"]
@@ -865,6 +866,7 @@ class Plotter:
                 )
                 # TODO don't mutate
                 out_df.loc[values.index, "width"] = new_width
+            """
 
         return out_df
 
