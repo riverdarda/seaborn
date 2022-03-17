@@ -30,12 +30,12 @@ class Line(Mark):
 
     sort: bool = True
 
-    def _plot_split(self, keys, data, ax, kws):
+    def _plot_split(self, keys, data, scales, orient, ax, kws):
 
-        keys = self.resolve_features(keys)
+        keys = self.resolve_features(keys, scales)
 
         if self.sort:
-            data = data.sort_values(self.orient)
+            data = data.sort_values(orient)
 
         line = mpl.lines.Line2D(
             data["x"].to_numpy(),
@@ -48,9 +48,9 @@ class Line(Mark):
         )
         ax.add_line(line)
 
-    def _legend_artist(self, variables, value):
+    def _legend_artist(self, variables, value, scales):
 
-        key = self.resolve_features({v: value for v in variables})
+        key = self.resolve_features({v: value for v in variables}, scales)
 
         return mpl.lines.Line2D(
             [], [],
@@ -67,17 +67,17 @@ class Area(Mark):
     color: MappableColor = Feature("C0", groups=True)
     alpha: MappableFloat = Feature(1, groups=True)
 
-    def _plot_split(self, keys, data, ax, kws):
+    def _plot_split(self, keys, data, scales, orient, ax, kws):
 
-        keys = self.resolve_features(keys)
-        kws["facecolor"] = self._resolve_color(keys)
-        kws["edgecolor"] = self._resolve_color(keys)
+        keys = self.resolve_features(keys, scales)
+        kws["facecolor"] = self._resolve_color(keys, scales)
+        kws["edgecolor"] = self._resolve_color(keys, scales)
 
         # TODO how will orient work here?
         # Currently this requires you to specify both orient and use y, xmin, xmin
         # to get a fill along the x axis. Seems like we should need only one of those?
         # Alternatively, should we just make the PolyCollection manually?
-        if self.orient == "x":
+        if orient == "x":
             ax.fill_between(data["x"], data["ymin"], data["ymax"], **kws)
         else:
             ax.fill_betweenx(data["y"], data["xmin"], data["xmax"], **kws)

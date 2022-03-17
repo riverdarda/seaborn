@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Union, Any
     from matplotlib.artist import Artist
+    from seaborn._core.scales import Scale
 
     MappableBool = Union[bool, Feature]
     MappableFloat = Union[float, Feature]
@@ -30,14 +31,14 @@ class Bar(Mark):
     width: MappableFloat = Feature(.8)  # TODO groups?
     baseline: MappableFloat = Feature(0)  # TODO *is* this mappable?
 
-    def resolve_features(self, data):
+    def resolve_features(self, data, scales):
 
         # TODO copying a lot from scatter
 
-        resolved = super().resolve_features(data)
+        resolved = super().resolve_features(data, scales)
 
-        resolved["facecolor"] = self._resolve_color(data)
-        resolved["edgecolor"] = self._resolve_color(data, "edge")
+        resolved["facecolor"] = self._resolve_color(data, "", scales)
+        resolved["edgecolor"] = self._resolve_color(data, "edge", scales)
 
         fc = resolved["facecolor"]
         if isinstance(fc, tuple):
@@ -48,14 +49,14 @@ class Bar(Mark):
 
         return resolved
 
-    def _plot_split(self, keys, data, ax, kws):
+    def _plot_split(self, keys, data, scales, orient, ax, kws):
 
         xys = data[["x", "y"]].to_numpy()
-        data = self.resolve_features(data)
+        data = self.resolve_features(data, scales)
 
         def coords_to_geometry(x, y, w, b):
             # TODO possible too slow with lots of bars (e.g. dense hist)
-            if self.orient == "x":
+            if orient == "x":
                 w, h = w, y - b
                 xy = x - w / 2, b
             else:
@@ -80,10 +81,12 @@ class Bar(Mark):
 
         # TODO add container object to ax, line ax.bar does
 
-    def _legend_artist(self, variables: list[str], value: Any) -> Artist:
+    def _legend_artist(
+        self, variables: list[str], value: Any, scales: dict[str, Scale],
+    ) -> Artist:
         # TODO return some sensible default?
         key = {v: value for v in variables}
-        key = self.resolve_features(key)
+        key = self.resolve_features(key, scales)
         artist = mpl.patches.Patch(
             facecolor=key["facecolor"],
             edgecolor=key["edgecolor"],
