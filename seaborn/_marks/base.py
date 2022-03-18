@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from collections.abc import Generator
     from numpy import ndarray
     from pandas import DataFrame
-    from matplotlib.axes import Axes
     from matplotlib.artist import Artist
     from seaborn._core.mappings import RGBATuple
     from seaborn._core.scales import Scale
@@ -128,7 +127,7 @@ class Mark:
         self,
         data: DataFrame | dict[str, Any],
         name: str,
-        scales: Scale | None,
+        scales: dict[str, Scale] | None = None,
     ) -> Any:
         """Obtain default, specified, or mapped value for a named feature.
 
@@ -138,6 +137,7 @@ class Mark:
             Container with data values for features that will be semantically mapped.
         name :
             Identity of the feature / semantic.
+        TODO scales
 
         Returns
         -------
@@ -159,11 +159,11 @@ class Mark:
             return feature
 
         if name in data:
-            if name in scales:
-                feature = scales[name](data[name])
-            else:
+            if scales is None or name not in scales:
                 # TODO Might this obviate the identity scale? Just don't add a scale?
                 feature = data[name]
+            else:
+                feature = scales[name](data[name])
             if return_array:
                 feature = np.asarray(feature)
             return feature
@@ -182,7 +182,7 @@ class Mark:
         self,
         data: DataFrame | dict,
         prefix: str = "",
-        scales: Scale | None = None,
+        scales: dict[str, Scale] | None = None,
     ) -> RGBATuple | ndarray:
         """
         Obtain a default, specified, or mapped value for a color feature.
@@ -263,39 +263,14 @@ class Mark:
         else:
             return "x"
 
-    def _plot(
+    def plot(
         self,
         split_generator: Callable[[], Generator],
         scales: dict[str, Scale],
         orient: Literal["x", "y"],
     ) -> None:
         """Main interface for creating a plot."""
-        axes_cache = set()
-        for keys, data, ax in split_generator():
-            kws = self.artist_kws.copy()
-            self._plot_split(keys, data, scales, orient, ax, kws)
-            axes_cache.add(ax)
-
-        # TODO what is the best way to do this a minimal number of times?
-        # Probably can be moved out to Plot?
-        for ax in axes_cache:
-            ax.autoscale_view()
-
-        self._finish_plot()
-
-    def _plot_split(
-        self,
-        keys: dict[str, Any],
-        data: DataFrame,
-        ax: Axes,
-        kws: dict,
-    ) -> None:
-        """Method that plots specific subsets of data. Must be defined by subclass."""
-        raise NotImplementedError
-
-    def _finish_plot(self) -> None:
-        """Method that is called after each data subset has been plotted."""
-        pass
+        raise NotImplementedError()
 
     def _legend_artist(
         self, variables: list[str], value: Any, scales: dict[str, Scale],

@@ -790,7 +790,11 @@ class Plotter:
                 grouping_vars, df, subplots
             )
 
-            mark._plot(split_generator, scales, orient)
+            mark.plot(split_generator, scales, orient)
+
+        # TODO is this the right place for this?
+        for sp in self._subplots:
+            sp["ax"].autoscale_view()
 
         self._update_legend_contents(mark, data, scales)
 

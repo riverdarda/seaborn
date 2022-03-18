@@ -49,10 +49,7 @@ class Bar(Mark):
 
         return resolved
 
-    def _plot_split(self, keys, data, scales, orient, ax, kws):
-
-        xys = data[["x", "y"]].to_numpy()
-        data = self.resolve_features(data, scales)
+    def plot(self, split_gen, scales, orient):
 
         def coords_to_geometry(x, y, w, b):
             # TODO possible too slow with lots of bars (e.g. dense hist)
@@ -64,22 +61,30 @@ class Bar(Mark):
                 xy = b, y - h / 2
             return xy, w, h
 
-        bars = []
-        for i, (x, y) in enumerate(xys):
+        # TODO pass scales *into* split_gen?
+        for keys, data, ax in split_gen():
 
-            xy, w, h = coords_to_geometry(x, y, data["width"][i], data["baseline"][i])
-            bar = mpl.patches.Rectangle(
-                xy=xy,
-                width=w,
-                height=h,
-                facecolor=data["facecolor"][i],
-                edgecolor=data["edgecolor"][i],
-                linewidth=data["edgewidth"][i],
-            )
-            ax.add_patch(bar)
-            bars.append(bar)
+            xys = data[["x", "y"]].to_numpy()
+            data = self.resolve_features(data, scales)
 
-        # TODO add container object to ax, line ax.bar does
+            bars = []
+            for i, (x, y) in enumerate(xys):
+
+                width, baseline = data["width"][i], data["baseline"][i]
+                xy, w, h = coords_to_geometry(x, y, width, baseline)
+
+                bar = mpl.patches.Rectangle(
+                    xy=xy,
+                    width=w,
+                    height=h,
+                    facecolor=data["facecolor"][i],
+                    edgecolor=data["edgecolor"][i],
+                    linewidth=data["edgewidth"][i],
+                )
+                ax.add_patch(bar)
+                bars.append(bar)
+
+            # TODO add container object to ax, line ax.bar does
 
     def _legend_artist(
         self, variables: list[str], value: Any, scales: dict[str, Scale],

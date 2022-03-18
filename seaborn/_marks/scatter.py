@@ -75,30 +75,29 @@ class Scatter(Mark):
 
         return resolved
 
-    def _plot_split(self, keys, data, scales, orient, ax, kws):
+    def plot(self, split_gen, scales, orient):
 
         # TODO Not backcompat with allowed (but nonfunctional) univariate plots
         # (That should be solved upstream by defaulting to "" for unset x/y?)
         # (Be mindful of xmin/xmax, etc!)
 
-        kws = kws.copy()
+        # TODO pass scales *into* split_gen?
+        for keys, data, ax in split_gen():
 
-        offsets = np.column_stack([data["x"], data["y"]])
+            offsets = np.column_stack([data["x"], data["y"]])
+            data = self.resolve_features(data, scales)
 
-        # Maybe this can be out in plot()? How do we get coordinates?
-        data = self.resolve_features(data, scales)
-
-        points = mpl.collections.PathCollection(
-            offsets=offsets,
-            paths=data["path"],
-            sizes=data["size"],
-            facecolors=data["facecolor"],
-            edgecolors=data["edgecolor"],
-            linewidths=data["linewidth"],
-            transOffset=ax.transData,
-            transform=mpl.transforms.IdentityTransform(),
-        )
-        ax.add_collection(points)
+            points = mpl.collections.PathCollection(
+                offsets=offsets,
+                paths=data["path"],
+                sizes=data["size"],
+                facecolors=data["facecolor"],
+                edgecolors=data["edgecolor"],
+                linewidths=data["linewidth"],
+                transOffset=ax.transData,
+                transform=mpl.transforms.IdentityTransform(),
+            )
+            ax.add_collection(points)
 
     def _legend_artist(
         self, variables: list[str], value: Any, scales: dict[str, Scale],
