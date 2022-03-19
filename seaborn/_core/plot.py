@@ -222,8 +222,8 @@ class Plot:
             "mark": mark,
             "stat": stat,
             "move": move,
+            "vars": variables,
             "source": data,
-            "variables": variables,
             "orient": {"v": "x", "h": "y"}.get(orient, orient),  # type: ignore
         })
 
@@ -520,7 +520,7 @@ class Plotter:
         self._layers = []
         for layer in p._layers:
             self._layers.append({
-                "data": self._data.join(layer.get("source"), layer.get("variables")),
+                "data": self._data.join(layer.get("source"), layer.get("vars")),
                 **layer,
             })
 
@@ -624,8 +624,7 @@ class Plotter:
             var_values = pd.concat([
                 df.get(var),
                 # Only use variables that are *added* at the layer-level
-                *(x["data"].frame.get(var)
-                  for x in self._layers if var in x["variables"])
+                *(x["data"].frame.get(var) for x in self._layers if var in x["vars"])
             ], axis=0, join="inner", ignore_index=True).rename(var)
 
             # Determine whether this is an coordinate variable
@@ -860,7 +859,6 @@ class Plotter:
     def _generate_pairings(
         self, df: DataFrame, pair_variables: dict,
     ) -> Generator[
-        # TODO type scales dict more strictly when we get rid of original Scale
         tuple[list[dict], DataFrame, dict[str, Scale]], None, None
     ]:
         # TODO retype return with SubplotSpec or similar
