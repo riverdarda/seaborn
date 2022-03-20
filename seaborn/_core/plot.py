@@ -4,7 +4,6 @@ import io
 import re
 import itertools
 from collections import abc
-from distutils.version import LooseVersion
 
 import pandas as pd
 import matplotlib as mpl
@@ -16,13 +15,14 @@ from seaborn._core.rules import categorical_order
 from seaborn._core.scales import ScaleSpec, Scale
 from seaborn._core.subplots import Subplots
 from seaborn._core.groupby import GroupBy
-from seaborn._core.properties import PROPERTIES, Property
+from seaborn._core.properties import PROPERTIES, Property, Coordinate
+from seaborn.external.version import Version
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Literal, Any
     from collections.abc import Callable, Generator, Hashable
-    from pandas import DataFrame, Index
+    from pandas import DataFrame, Series, Index
     from matplotlib.axes import Axes
     from matplotlib.artist import Artist
     from matplotlib.figure import Figure, SubFigure
@@ -427,6 +427,8 @@ class Plot:
         plotter._setup_data(self)
         plotter._setup_figure(self)
         plotter._setup_scales(self)
+        # plotter._updated_axes_and_transform_coords(self)
+        # plotter._apply_stat_transforms(self)
 
         for layer in plotter._layers:
             plotter._plot_layer(self, layer)
@@ -613,6 +615,102 @@ class Plotter:
                 title_text = ax.set_title(title)
                 title_text.set_visible(show_title)
 
+    def _updated_axes_and_transform_coords(self, p: Plot) -> None:
+
+        prop = Coordinate()
+
+        for var in (v for v in p._variables if v[0] in "xy"):
+
+            # Parse name to identify variable (x, y, xmin, etc.) and axis (x/y)
+            m = re.match(r"^(?P<prefix>(?P<axis>[x|y])\d*).*", var)
+            prefix = m["prefix"]
+            axis = m["axis"]
+
+            share_state = self._subplots.subplot_spec[f"share{axis}"]
+
+            # Shared categorical axes are broken on matplotlib<3.4.0.
+            # https://github.com/matplotlib/matplotlib/pull/18308
+            # This only affects us when sharing *paired* axes. This is a novel/niche
+            # behavior, so we will raise rather than hack together a workaround.
+            if Version(mpl.__version__) < Version("3.4.0"):
+                paired_axis = axis in p._pairspec
+                cat_scale = self._scales[var].scale_type in ["nominal", "ordinal"]
+                ok_dim = {"x": "col", "y": "row"}[axis]
+                shared_axes = share_state not in [False, "none", ok_dim]
+                if paired_axis and cat_scale and shared_axes:
+                    err = "Sharing paired categorical axes requires matplotlib>=3.4.0"
+                    raise RuntimeError(err)
+
+            # Concatenate layers, using only the relevant coordinate and faceting vars,
+            # This is unnecessarily wasteful, as layer data will often be redundant.
+            # But figuring out the minimal amount we need is more complicated.
+            var_df = pd.concat([
+                x["data"].frame.filter([var, "col", "row"]) for x in self._layers
+            ], ignore_index=True)
+
+            # Now loop through each subplot, deriving the relevant seed data to setup
+            # the scale (so that axis units / categories are initialized properly)
+            # And then scale the data in each layer.
+            scale = self._get_scale(p, prefix, prop, var_df[var])
+            subplots = [sp for sp in self._subplots if sp[axis] == prefix]
+
+            # Set up an empty series to receive the transformed values.
+            # We need this to handle piecemeal tranforms of categories -> floats.
+            transformed_data = [
+                pd.Series(dtype=float, index=layer["data"].frame.index, name=var)
+                for layer in self._layers
+            ]
+
+            for subplot in subplots:
+                axis_obj = getattr(subplot["ax"], f"{axis}axis")
+
+                if share_state in [True, "all"]:
+                    # The all-shared case is easiest, every subplot sees all the data
+                    seed_values = var_df[var]
+                else:
+                    # Otherwise, we need to setup separate scales for different subplots
+                    if share_state in [False, "none"]:
+                        # Fully independent axes are also easy: use each subplot's data
+                        idx = self._get_subplot_index(var_df, subplot)
+                    elif share_state in var_df:
+                        # Sharing within row/col is more complicated
+                        use_rows = var_df[share_state] == subplot[share_state]
+                        idx = var_df.index[use_rows]
+                    else:
+                        # This configuration doesn't make much sense, but it's fine
+                        idx = var_df.index
+
+                    seed_values = var_df.loc[idx, var]
+
+                transform = scale.setup(seed_values, prop, axis=axis_obj)
+
+                for layer, new_series in zip(self._layers, transformed_data):
+                    layer_df = layer["data"].frame
+                    if var in layer_df:
+                        idx = self._get_subplot_index(layer_df, subplot)
+                        new_series.loc[idx] = transform(layer_df.loc[idx, var])
+
+            # Now the transformed data series are complete, set update the layer data
+            for layer, new_series in zip(self._layers, transformed_data):
+                layer_df = layer["data"].frame
+                if var in layer_df:
+                    layer_df[var] = new_series
+
+    def _get_scale(
+        self, spec: Plot, var: str, prop: Property, values: Series
+    ) -> ScaleSpec:
+
+        if var in spec._scales:
+            arg = spec._scales[var]
+            if isinstance(arg, ScaleSpec):
+                scale = arg
+            else:
+                scale = prop.infer_scale(arg, values)
+        else:
+            scale = prop.default_scale(values)
+
+        return scale
+
     def _setup_scales(self, p: Plot) -> None:
 
         # Identify all of the variables that will be used at some point in the plot
@@ -689,7 +787,7 @@ class Plotter:
             # This only affects us when sharing *paired* axes.
             # While it would be possible to hack a workaround together,
             # this is a novel/niche behavior, so we will just raise.
-            if LooseVersion(mpl.__version__) < "3.4.0":
+            if Version(mpl.__version__) < Version("3.4.0"):
                 paired_axis = axis in p._pairspec
                 cat_scale = self._scales[var].scale_type == "categorical"
                 ok_dim = {"x": "col", "y": "row"}[axis]
@@ -910,12 +1008,27 @@ class Plotter:
 
             yield subplots, df.assign(**reassignments), scales
 
-    def _filter_subplot_data(self, df: DataFrame, subplot: dict) -> DataFrame:
+    def _get_subplot_index(self, df: DataFrame, subplot: dict) -> DataFrame:
+
+        dims = df.columns.intersection(["col", "row"])
+        if dims.empty:
+            return df.index
 
         keep_rows = pd.Series(True, df.index, dtype=bool)
-        for dim in ["col", "row"]:
-            if dim in df:
-                keep_rows &= df[dim] == subplot[dim]
+        for dim in dims:
+            keep_rows &= df[dim] == subplot[dim]
+        return df.index[keep_rows]
+
+    def _filter_subplot_data(self, df: DataFrame, subplot: dict) -> DataFrame:
+        # TODO being replaced by above function
+
+        dims = df.columns.intersection(["col", "row"])
+        if dims.empty:
+            return df
+
+        keep_rows = pd.Series(True, df.index, dtype=bool)
+        for dim in dims:
+            keep_rows &= df[dim] == subplot[dim]
         return df[keep_rows]
 
     def _setup_split_generator(
