@@ -76,8 +76,8 @@ class Area(Mark):
             kws = self.artist_kws.copy()
 
             keys = self.resolve_features(keys, scales)
-            kws["facecolor"] = self._resolve_color(keys, scales)
-            kws["edgecolor"] = self._resolve_color(keys, scales)
+            kws["facecolor"] = self._resolve_color(keys, scales=scales)
+            kws["edgecolor"] = self._resolve_color(keys, scales=scales)
 
             # TODO how will orient work here?
             # Currently this requires you to specify both orient and use y, xmin, xmin
