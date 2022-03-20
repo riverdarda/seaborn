@@ -269,6 +269,30 @@ class TestLayerAddition:
         assert s.orient_at_call == expected
         assert m.orient_at_call == expected
 
+    def test_variable_list(self, long_df):
+
+        p = Plot(long_df, x="x", y="y")
+        assert p._variables == ["x", "y"]
+
+        p = Plot(long_df).add(MockMark(), x="x", y="y")
+        assert p._variables == ["x", "y"]
+
+        p = Plot(long_df, y="x", color="a").add(MockMark(), x="y")
+        assert p._variables == ["y", "color", "x"]
+
+        p = Plot(long_df, x="x", y="y", color="a").add(MockMark(), color=None)
+        assert p._variables == ["x", "y", "color"]
+
+        p = (
+            Plot(long_df, x="x", y="y")
+            .add(MockMark(), color="a")
+            .add(MockMark(), alpha="s")
+        )
+        assert p._variables == ["x", "y", "color", "alpha"]
+
+        p = Plot(long_df, y="x").pair(x=["a", "b"])
+        assert p._variables == ["y", "x0", "x1"]
+
 
 class TestAxisScaling:
 

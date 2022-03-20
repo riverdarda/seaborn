@@ -59,10 +59,12 @@ class Plot:
 
         if args:
             data, x, y = self._resolve_positionals(args, data, x, y)
-        if x is not None:
-            variables["x"] = x
+
+        # Build new dict with x/y rather than adding to preserve natural order
         if y is not None:
-            variables["y"] = y
+            variables = {"y": y, **variables}
+        if x is not None:
+            variables = {"x": x, **variables}
 
         self._data = PlotData(data, variables)
         self._layers = []
@@ -153,6 +155,18 @@ class Plot:
         new._target = self._target
 
         return new
+
+    @property
+    def _variables(self) -> list[str]:
+
+        variables = (
+            list(self._data.frame)
+            + list(self._pairspec.get("variables", []))
+            + list(self._facetspec.get("variables", []))
+        )
+        for layer in self._layers:
+            variables.extend(c for c in layer["vars"] if c not in variables)
+        return variables
 
     def inplace(self, val: bool | None = None) -> Plot:
 
@@ -555,6 +569,8 @@ class Plotter:
                 label = next((name for name in names if name is not None), None)
                 ax.set(**{f"{axis}label": label})
 
+                # TODO there should be some override (in Plot.configure?) so that
+                # tick labels can be shown on interior shared axes
                 axis_obj = getattr(ax, f"{axis}axis")
                 visible_side = {"x": "bottom", "y": "left"}.get(axis)
                 show_axis_label = (
@@ -600,10 +616,7 @@ class Plotter:
     def _setup_scales(self, p: Plot) -> None:
 
         # Identify all of the variables that will be used at some point in the plot
-        df = self._data.frame
-        variables = list(df)
-        for layer in self._layers:
-            variables.extend(c for c in layer["data"].frame if c not in variables)
+        variables = p._variables
 
         # Catch cases where a variable is explicitly scaled but has no data,
         # which is *likely* to be a user error (i.e. a typo or mis-specified plot).
@@ -616,6 +629,7 @@ class Plotter:
             # TODO decide whether this is too strict. Maybe a warning?
             # raise RuntimeError(err)  # FIXME:PlotSpecError
 
+        df = self._data.frame
         self._scales = {}
 
         for var in variables:
