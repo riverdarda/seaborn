@@ -242,6 +242,10 @@ class Mark:
         x_type = None if "x" not in scales else scales["x"].scale_type
         y_type = None if "y" not in scales else scales["y"].scale_type
 
+        if x_type is None and y_type is None:
+            # TODO adding this while prototyping not having scales in compute_stat
+            return "x"
+
         if x_type is None:
             return "y"
 

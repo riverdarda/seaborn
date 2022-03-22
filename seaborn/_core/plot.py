@@ -426,9 +426,9 @@ class Plot:
         plotter = Plotter(pyplot=pyplot)
         plotter._setup_data(self)
         plotter._setup_figure(self)
+        plotter._transform_coords(self)
+        plotter._compute_stats(self)
         plotter._setup_scales(self)
-        # plotter._updated_axes_and_transform_coords(self)
-        # plotter._apply_stat_transforms(self)
 
         for layer in plotter._layers:
             plotter._plot_layer(self, layer)
@@ -615,7 +615,7 @@ class Plotter:
                 title_text = ax.set_title(title)
                 title_text.set_visible(show_title)
 
-    def _updated_axes_and_transform_coords(self, p: Plot) -> None:
+    def _transform_coords(self, p: Plot) -> None:
 
         prop = Coordinate()
 
@@ -644,9 +644,12 @@ class Plotter:
             # Concatenate layers, using only the relevant coordinate and faceting vars,
             # This is unnecessarily wasteful, as layer data will often be redundant.
             # But figuring out the minimal amount we need is more complicated.
-            var_df = pd.concat([
-                x["data"].frame.filter([var, "col", "row"]) for x in self._layers
-            ], ignore_index=True)
+            cols = [var, "col", "row"]
+            layer_values = [x["data"].frame.filter(cols) for x in self._layers]
+            if layer_values:
+                var_df = pd.concat(layer_values, ignore_index=True)
+            else:
+                var_df = pd.DataFrame(columns=cols)
 
             # Now loop through each subplot, deriving the relevant seed data to setup
             # the scale (so that axis units / categories are initialized properly)
@@ -696,6 +699,57 @@ class Plotter:
                 if var in layer_df:
                     layer_df[var] = new_series
 
+    def _compute_stats(self, spec: Plot) -> None:
+
+        grouping_properties = [v for v in PROPERTIES if v not in "xy"]
+        grouping_properties += ["col", "row", "group"]  # TODO where best to define?
+
+        for layer in self._layers:
+
+            data = layer["data"]
+            mark = layer["mark"]
+            stat = layer["stat"]
+
+            grouping_vars = list(data.frame.columns.intersection(grouping_properties))
+
+            if stat is None:
+                continue
+
+            pair_variables = spec._pairspec.get("structure", {})
+            iter_axes = itertools.product(*[
+                pair_variables.get(axis, [axis]) for axis in "xy"
+            ])
+
+            orig = data.frame
+
+            parts = []
+            for x, y in iter_axes:
+
+                scales = {}  # TODO; will need to infer?
+                df = orig.assign(x=orig[x], y=orig[y])
+
+                orient = layer["orient"] or mark._infer_orient(scales)
+
+                if stat.group_by_orient:
+                    group_todo = [orient, *grouping_vars]
+                else:
+                    group_todo = grouping_vars
+                groupby = GroupBy(group_todo)
+                part_index = list(grouping_vars)
+                if x == "x":
+                    part_index.append(x)
+                if y == "y":
+                    part_index.append(y)
+                res = stat(df, groupby, orient, scales).set_index(part_index)
+                # TODO handle other derivative values
+                if "x" in res:
+                    res[x] = res.pop("x")
+                if "y" in res:
+                    res[y] = res.pop("y")
+                parts.append(res)
+
+            data.frame = pd.concat(parts, axis=1).reset_index()
+
     def _get_scale(
         self, spec: Plot, var: str, prop: Property, values: Series
     ) -> ScaleSpec:
@@ -712,6 +766,38 @@ class Plotter:
         return scale
 
     def _setup_scales(self, p: Plot) -> None:
+
+        # Identify all of the variables that will be used at some point in the plot
+        variables = p._variables
+        self._scales = {}
+
+        for var in variables:
+
+            # Get the data all the distinct appearances of this variable.
+            var_values = pd.concat([
+                self._data.frame.get(var),
+                # Only use variables that are *added* at the layer-level
+                *(x["data"].frame.get(var) for x in self._layers if var in x["vars"])
+            ], axis=0, join="inner", ignore_index=True).rename(var)
+
+            # Determine whether this is an coordinate variable
+            # (i.e., x/y, paired x/y, or derivative such as xmax)
+            m = re.match(r"^(?P<prefix>(?P<axis>[x|y])\d*).*", var)
+            if m is None:
+                axis = None
+            else:
+                var = m.group("prefix")
+                axis = m.group("axis")
+
+            prop = PROPERTIES.get(var if axis is None else axis, Property())
+            scale = self._get_scale(p, var, prop, var_values)
+
+            # Initialize the data-dependent parameters of the scale
+            # Note that this returns a copy and does not mutate the original
+            # This dictionary is used by the semantic mappings
+            self._scales[var] = scale.setup(var_values, prop)
+
+    def _setup_scales_old(self, p: Plot) -> None:
 
         # Identify all of the variables that will be used at some point in the plot
         variables = p._variables
@@ -835,6 +921,32 @@ class Plotter:
                 set_scale_obj(subplot["ax"], axis, axis_scale.matplotlib_scale)
 
     def _plot_layer(self, p: Plot, layer: dict[str, Any]) -> None:
+
+        data = layer["data"]
+        mark = layer["mark"]
+
+        default_grouping_vars = ["col", "row", "group"]  # TODO where best to define?
+
+        pair_variables = p._pairspec.get("structure", {})
+
+        for subplots, df, scales in self._generate_pairings(data.frame, pair_variables):
+
+            orient = layer["orient"] or mark._infer_orient(scales)
+
+            grouping_vars = mark.grouping_vars + default_grouping_vars
+            split_generator = self._setup_split_generator(
+                grouping_vars, df, subplots
+            )
+
+            mark.plot(split_generator, scales, orient)
+
+        # TODO is this the right place for this?
+        for sp in self._subplots:
+            sp["ax"].autoscale_view()
+
+        self._update_legend_contents(mark, data, scales)
+
+    def _plot_layer_old(self, p: Plot, layer: dict[str, Any]) -> None:
         # TODO layer should be a TypedDict
 
         default_grouping_vars = ["col", "row", "group"]  # TODO where best to define?
