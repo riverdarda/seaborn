@@ -429,6 +429,7 @@ class Plot:
         plotter._transform_coords(self)
         plotter._compute_stats(self)
         plotter._setup_scales(self)
+        # plotter._move_marks(self)
 
         for layer in plotter._layers:
             plotter._plot_layer(self, layer)
@@ -701,8 +702,10 @@ class Plotter:
 
     def _compute_stats(self, spec: Plot) -> None:
 
-        grouping_properties = [v for v in PROPERTIES if v not in "xy"]
-        grouping_properties += ["col", "row", "group"]  # TODO where best to define?
+        grouping_vars = [v for v in PROPERTIES if v not in "xy"]
+        grouping_vars += ["col", "row", "group"]
+
+        pair_vars = spec._pairspec.get("structure", {})
 
         for layer in self._layers:
 
@@ -710,45 +713,60 @@ class Plotter:
             mark = layer["mark"]
             stat = layer["stat"]
 
-            grouping_vars = list(data.frame.columns.intersection(grouping_properties))
-
             if stat is None:
                 continue
 
-            pair_variables = spec._pairspec.get("structure", {})
             iter_axes = itertools.product(*[
-                pair_variables.get(axis, [axis]) for axis in "xy"
+                pair_vars.get(axis, [axis]) for axis in "xy"
             ])
 
-            orig = data.frame
+            old = data.frame
+            new = None
 
-            parts = []
-            for x, y in iter_axes:
+            for coord_vars in iter_axes:
 
-                scales = {}  # TODO; will need to infer?
-                df = orig.assign(x=orig[x], y=orig[y])
+                pairings = "xy", coord_vars
 
+                df = old.copy()
+                for axis, var in zip(*pairings):
+                    if axis != var:
+                        df = df.rename(columns={var: axis})
+                        drop_cols = [x for x in df if re.match(rf"{axis}\d+", x)]
+                        df = df.drop(drop_cols, axis=1)
+
+                # TODO with the refactor we haven't set up scales at this point
+                # But we need them to determine orient in ambiguous cases
+                # It feels cumbersome to be doing this repeatedly, but I am not
+                # sure if it is cleaner to make piecemeal additions to self._scales
+                scales = {}
+                for axis in "xy":
+                    if axis in df:
+                        scale = self._get_scale(spec, axis, Coordinate(), df[axis])
+                        scales[axis] = scale.setup(df[axis], Coordinate())
                 orient = layer["orient"] or mark._infer_orient(scales)
 
                 if stat.group_by_orient:
-                    group_todo = [orient, *grouping_vars]
+                    grouper = [orient, *grouping_vars]
                 else:
-                    group_todo = grouping_vars
-                groupby = GroupBy(group_todo)
-                part_index = list(grouping_vars)
-                if x == "x":
-                    part_index.append(x)
-                if y == "y":
-                    part_index.append(y)
-                res = stat(df, groupby, orient, scales).set_index(part_index)
-                # TODO handle other derivative values
-                if "x" in res:
-                    res[x] = res.pop("x")
-                if "y" in res:
-                    res[y] = res.pop("y")
-                parts.append(res)
+                    grouper = grouping_vars
+                groupby = GroupBy(grouper)
+                res = stat(df, groupby, orient, scales)
 
-            data.frame = pd.concat(parts, axis=1).reset_index()
+                for var in coord_vars:
+                    m = re.match(r"(?P<axis>x|y)(?P<n>\d+)", var)
+                    if m is None:
+                        continue
+                    for col in res:
+                        if col.startswith(m["axis"]):
+                            res[col + m["n"]] = res.pop(col)
+
+                if new is None:
+                    new = res
+                else:
+                    on_cols = new.columns.intersection(res.columns).to_list()
+                    new = new.merge(res, on=on_cols, how="outer")
+
+            data.frame = new
 
     def _get_scale(
         self, spec: Plot, var: str, prop: Property, values: Series
@@ -782,12 +800,12 @@ class Plotter:
 
             # Determine whether this is an coordinate variable
             # (i.e., x/y, paired x/y, or derivative such as xmax)
-            m = re.match(r"^(?P<prefix>(?P<axis>[x|y])\d*).*", var)
+            m = re.match(r"^(?P<prefix>(?P<axis>x|y)\d*).*", var)
             if m is None:
                 axis = None
             else:
-                var = m.group("prefix")
-                axis = m.group("axis")
+                var = m["prefix"]
+                axis = m["axis"]
 
             prop = PROPERTIES.get(var if axis is None else axis, Property())
             scale = self._get_scale(p, var, prop, var_values)
@@ -1109,16 +1127,25 @@ class Plotter:
                 if prefix is not None:
                     reassignments.update({
                         # Complex regex business to support e.g. x0max
-                        re.sub(rf"^{prefix}(.*)$", rf"{axis}\1", col): df[col]
+                        re.sub(rf"^{prefix}(.*)$", rf"{axis}\1", col): col
                         for col in df if col.startswith(prefix)
                     })
 
             scales = self._scales.copy()
             scales.update(
-                {new: self._scales[old.name] for new, old in reassignments.items()}
+                {new: self._scales[old] for new, old in reassignments.items()}
             )
 
-            yield subplots, df.assign(**reassignments), scales
+            # TODO yield subplots, df.assign(**reassignments), scales
+
+            out = df.copy()
+            for axis, var in zip("xy", [x, y]):
+                if var is not None:
+                    out = out.rename(columns={var: axis})
+                    drop_cols = [x for x in out if re.match(rf"{axis}\d+", x)]
+                    out = out.drop(drop_cols, axis=1)
+
+            yield subplots, out, scales
 
     def _get_subplot_index(self, df: DataFrame, subplot: dict) -> DataFrame:
 
