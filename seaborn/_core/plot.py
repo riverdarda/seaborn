@@ -700,7 +700,7 @@ class Plotter:
                         new_series.loc[idx] = transform(layer_df.loc[idx, var])
 
                 # TODO need decision about whether to do this or modify axis transform
-                getattr(subplot["ax"], f"set_{axis}scale")(transform.matplotlib_scale)
+                set_scale_obj(subplot["ax"], axis, transform.matplotlib_scale)
 
             # Now the transformed data series are complete, set update the layer data
             for layer, new_series in zip(self._layers, transformed_data):
@@ -930,7 +930,7 @@ class Plotter:
             subplot_df = self._filter_subplot_data(df, subplot)
             axes_df = subplot_df[coord_cols]
             for var, values in axes_df.items():
-                axis = getattr(subplot["ax"], f"{var}axis")
+                axis = getattr(subplot["ax"], f"{var[0]}axis")
                 # TODO see https://github.com/matplotlib/matplotlib/issues/22713
                 inverted = axis.get_transform().inverted().transform(values)
                 out_df.loc[values.index, var] = inverted
