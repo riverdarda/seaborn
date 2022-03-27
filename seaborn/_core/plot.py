@@ -699,6 +699,9 @@ class Plotter:
                         idx = self._get_subplot_index(layer_df, subplot)
                         new_series.loc[idx] = transform(layer_df.loc[idx, var])
 
+                # TODO need decision about whether to do this or modify axis transform
+                getattr(subplot["ax"], f"set_{axis}scale")(transform.matplotlib_scale)
+
             # Now the transformed data series are complete, set update the layer data
             for layer, new_series in zip(self._layers, transformed_data):
                 layer_df = layer["data"].frame
@@ -1123,15 +1126,10 @@ class Plotter:
             subplot_df = self._filter_subplot_data(df, subplot)
             axes_df = subplot_df[coord_cols]
             for var, values in axes_df.items():
-                scale = subplot.get(f"{var[0]}scale", None)
-                if scale is not None:
-                    # TODO this is a hack to work around issue encountered while
-                    # prototyping the Hist stat. We need to solve scales for coordinate
-                    # variables defined as part of the stat transform
-                    # Plan is to merge as is and then do a bigger refactor to
-                    # the timing / logic of scale setup
-                    values = scale.invert_transform(values)
-                out_df.loc[values.index, var] = values
+                axis = getattr(subplot["ax"], f"{var}axis")
+                # TODO see https://github.com/matplotlib/matplotlib/issues/22713
+                inverted = axis.get_transform().inverted().transform(values)
+                out_df.loc[values.index, var] = inverted
 
             """ TODO commenting this out to merge Hist work before bigger refactor
             if "width" in subplot_df:
@@ -1174,13 +1172,18 @@ class Plotter:
                     out_df = data.frames[(x, y)].copy()
                 else:
                     out_df = data.frame.copy()
-                for axis, var in zip("xy", (x, y)):
-                    if axis != var:
-                        out_df = out_df.rename(columns={var: axis})
-                        cols = [col for col in out_df if re.match(rf"{axis}\d+", col)]
-                        out_df = out_df.drop(cols, axis=1)
 
-            scales = {**self._scales, "x": self._scales[x], "y": self._scales[y]}
+            scales = self._scales.copy()
+            if x in out_df:
+                scales["x"] = self._scales[x]
+            if y in out_df:
+                scales["y"] = self._scales[y]
+
+            for axis, var in zip("xy", (x, y)):
+                if axis != var:
+                    out_df = out_df.rename(columns={var: axis})
+                    cols = [col for col in out_df if re.match(rf"{axis}\d+", col)]
+                    out_df = out_df.drop(cols, axis=1)
 
             yield subplots, out_df, scales
 
