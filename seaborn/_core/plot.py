@@ -393,7 +393,7 @@ class Plot:
         # TODO this is a hack; make a proper figure spec object
         new._figsize = figsize  # type: ignore
 
-        subplot_keys = ["sharex", "sharey"]
+        subplot_keys = ["sharex", "shlots arey"]
         for key in subplot_keys:
             val = locals()[key]
             if val is not None:
@@ -423,13 +423,18 @@ class Plot:
         # TODO if we have _target object, pyplot should be determined by whether it
         # is hooked into the pyplot state machine (how do we check?)
 
+        # TODO rather than attaching layers to the plotter, we should pass it around?
+        # That could prevent memory overloads given that the layers might have a few
+        # copies of dataframes included within them. Needs profiling.
+        # One downside is that it might make debugging a little harder.
+
         plotter = Plotter(pyplot=pyplot)
         plotter._setup_data(self)
         plotter._setup_figure(self)
         plotter._transform_coords(self)
         plotter._compute_stats(self)
         plotter._setup_scales(self)
-        # plotter._move_marks(self)
+        # plotter._move_marks(self)  # TODO just do this as part of _plot_layer?
 
         for layer in plotter._layers:
             plotter._plot_layer(self, layer)
@@ -721,7 +726,10 @@ class Plotter:
             ])
 
             old = data.frame
-            new = None
+
+            if pair_vars:
+                data.frames = {}
+                data.frame = None
 
             for coord_vars in iter_axes:
 
@@ -752,21 +760,10 @@ class Plotter:
                 groupby = GroupBy(grouper)
                 res = stat(df, groupby, orient, scales)
 
-                for var in coord_vars:
-                    m = re.match(r"(?P<axis>x|y)(?P<n>\d+)", var)
-                    if m is None:
-                        continue
-                    for col in res:
-                        if col.startswith(m["axis"]):
-                            res[col + m["n"]] = res.pop(col)
-
-                if new is None:
-                    new = res
+                if pair_vars:
+                    data.frames[coord_vars] = res
                 else:
-                    on_cols = new.columns.intersection(res.columns).to_list()
-                    new = new.merge(res, on=on_cols, how="outer")
-
-            data.frame = new
+                    data.frame = res
 
     def _get_scale(
         self, spec: Plot, var: str, prop: Property, values: Series
@@ -786,7 +783,7 @@ class Plotter:
     def _setup_scales(self, p: Plot) -> None:
 
         # Identify all of the variables that will be used at some point in the plot
-        variables = p._variables
+        variables = {"x", "y", *p._variables}
         self._scales = {}
 
         for var in variables:
@@ -947,7 +944,7 @@ class Plotter:
 
         pair_variables = p._pairspec.get("structure", {})
 
-        for subplots, df, scales in self._generate_pairings(data.frame, pair_variables):
+        for subplots, df, scales in self._generate_pairings(data, pair_variables):
 
             orient = layer["orient"] or mark._infer_orient(scales)
 
@@ -962,7 +959,7 @@ class Plotter:
         for sp in self._subplots:
             sp["ax"].autoscale_view()
 
-        self._update_legend_contents(mark, data, scales)
+        # TODO update to use data.frames self._update_legend_contents(mark, data, scales)
 
     def _plot_layer_old(self, p: Plot, layer: dict[str, Any]) -> None:
         # TODO layer should be a TypedDict
@@ -1099,53 +1096,41 @@ class Plotter:
         return out_df
 
     def _generate_pairings(
-        self, df: DataFrame, pair_variables: dict,
+        self, data: PlotData, pair_variables: dict,
     ) -> Generator[
         tuple[list[dict], DataFrame, dict[str, Scale]], None, None
     ]:
         # TODO retype return with SubplotSpec or similar
 
-        if not pair_variables:
-            # TODO casting to list because subplots below is a list
-            # Maybe a cleaner way to do this?
-            yield list(self._subplots), df, self._scales
-            return
-
         iter_axes = itertools.product(*[
-            pair_variables.get(axis, [None]) for axis in "xy"
+            pair_variables.get(axis, [axis]) for axis in "xy"
         ])
 
         for x, y in iter_axes:
 
             subplots = []
             for sub in self._subplots:
-                if (x is None or sub["x"] == x) and (y is None or sub["y"] == y):
+                if (sub["x"] == x) and (sub["y"] == y):
                     subplots.append(sub)
 
-            reassignments = {}
-            for axis, prefix in zip("xy", [x, y]):
-                if prefix is not None:
-                    reassignments.update({
-                        # Complex regex business to support e.g. x0max
-                        re.sub(rf"^{prefix}(.*)$", rf"{axis}\1", col): col
-                        for col in df if col.startswith(prefix)
-                    })
+            if data.frame is None:
+                out_df = data.frames[(x, y)]
+            elif not pair_variables:
+                out_df = data.frame
+            else:
+                if data.frame is None:
+                    out_df = data.frames[(x, y)].copy()
+                else:
+                    out_df = data.frame.copy()
+                for axis, var in zip("xy", (x, y)):
+                    if axis != var:
+                        out_df = out_df.rename(columns={var: axis})
+                        cols = [col for col in out_df if re.match(rf"{axis}\d+", col)]
+                        out_df = out_df.drop(cols, axis=1)
 
-            scales = self._scales.copy()
-            scales.update(
-                {new: self._scales[old] for new, old in reassignments.items()}
-            )
+            scales = {**self._scales, "x": self._scales[x], "y": self._scales[y]}
 
-            # TODO yield subplots, df.assign(**reassignments), scales
-
-            out = df.copy()
-            for axis, var in zip("xy", [x, y]):
-                if var is not None:
-                    out = out.rename(columns={var: axis})
-                    drop_cols = [x for x in out if re.match(rf"{axis}\d+", x)]
-                    out = out.drop(drop_cols, axis=1)
-
-            yield subplots, out, scales
+            yield subplots, out_df, scales
 
     def _get_subplot_index(self, df: DataFrame, subplot: dict) -> DataFrame:
 

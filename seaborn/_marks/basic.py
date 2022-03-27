@@ -37,7 +37,8 @@ class Line(Mark):
             keys = self.resolve_features(keys, scales)
 
             if self.sort:
-                data = data.sort_values(orient)
+                # TODO where to dropna?
+                data = data.dropna().sort_values(orient)
 
             line = mpl.lines.Line2D(
                 data["x"].to_numpy(),
