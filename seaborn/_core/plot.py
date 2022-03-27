@@ -782,18 +782,33 @@ class Plotter:
 
     def _setup_scales(self, p: Plot) -> None:
 
+        layers = self._layers
+
         # Identify all of the variables that will be used at some point in the plot
-        variables = {"x", "y", *p._variables}
+        variables = set()
+        for layer in layers:
+            if layer["data"].frame is None:
+                for df in layer["data"].frames.values():
+                    variables.update(df.columns)
+            else:
+                variables.update(layer["data"].frame.columns)
+
         self._scales = {}
 
         for var in variables:
 
             # Get the data all the distinct appearances of this variable.
-            var_values = pd.concat([
-                self._data.frame.get(var),
-                # Only use variables that are *added* at the layer-level
-                *(x["data"].frame.get(var) for x in self._layers if var in x["vars"])
-            ], axis=0, join="inner", ignore_index=True).rename(var)
+            if var in self._data:
+                parts = [self._data.frame.get(var)]
+            else:
+                parts = []
+                for layer in layers:
+                    if layer["data"].frame is None:
+                        for df in layer["data"].frames.values():
+                            parts.append(df.get(var))
+                    else:
+                        parts.append(layer["data"].frame.get(var))
+            var_values = pd.concat(parts, axis=0, join="inner", ignore_index=True).rename(var)
 
             # Determine whether this is an coordinate variable
             # (i.e., x/y, paired x/y, or derivative such as xmax)
@@ -939,14 +954,50 @@ class Plotter:
 
         data = layer["data"]
         mark = layer["mark"]
+        move = layer["move"]
 
         default_grouping_vars = ["col", "row", "group"]  # TODO where best to define?
+        grouping_properties = [v for v in PROPERTIES if v not in "xy"]
 
         pair_variables = p._pairspec.get("structure", {})
 
         for subplots, df, scales in self._generate_pairings(data, pair_variables):
 
             orient = layer["orient"] or mark._infer_orient(scales)
+
+            def get_order(var):
+                # Ignore order for x/y: they have been scaled to numeric indices,
+                # so any original order is no longer valid. Default ordering rules
+                # sorted unique numbers will correctly reconstruct intended order
+                # TODO This is tricky, make sure we add some tests for this
+                if var not in "xy" and var in scales:
+                    return scales[var].order
+
+            # TODO get this from the Mark, otherwise scale by natural spacing?
+            # (But what about sparse categoricals? categorical always width/height=1
+            # Should default width/height be 1 and then get scaled by Mark.width?
+            # Also note tricky thing, width attached to mark does not get rescaled
+            # during dodge, but then it dominates during feature resolution
+            if "width" not in df:
+                df["width"] = 0.8
+            if "height" not in df:
+                df["height"] = 0.8
+
+            if move is not None:
+                moves = move if isinstance(move, list) else [move]
+                for move in moves:
+                    move_groupers = [
+                        orient,
+                        *(getattr(move, "by", None) or grouping_properties),
+                        *default_grouping_vars,
+                    ]
+                    order = {var: get_order(var) for var in move_groupers}
+                    groupby = GroupBy(order)
+                    df = move(df, groupby, orient)
+
+            # TODO unscale coords using axes transforms rather than scales?
+            # Also need to handle derivatives (min/max/width, etc)
+            df = self._unscale_coords(subplots, df)
 
             grouping_vars = mark.grouping_vars + default_grouping_vars
             split_generator = self._setup_split_generator(
@@ -959,7 +1010,8 @@ class Plotter:
         for sp in self._subplots:
             sp["ax"].autoscale_view()
 
-        # TODO update to use data.frames self._update_legend_contents(mark, data, scales)
+        # TODO update to use data.frames
+        self._update_legend_contents(mark, data, scales)
 
     def _plot_layer_old(self, p: Plot, layer: dict[str, Any]) -> None:
         # TODO layer should be a TypedDict
