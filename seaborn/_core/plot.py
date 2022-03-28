@@ -393,7 +393,7 @@ class Plot:
         # TODO this is a hack; make a proper figure spec object
         new._figsize = figsize  # type: ignore
 
-        subplot_keys = ["sharex", "shlots arey"]
+        subplot_keys = ["sharex", "sharey"]
         for key in subplot_keys:
             val = locals()[key]
             if val is not None:
