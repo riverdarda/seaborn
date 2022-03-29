@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure, SubFigure
     from seaborn._marks.base import Mark
     from seaborn._stats.base import Stat
-    from seaborn._core.move import Move
+    from seaborn._core.moves import Move
     from seaborn._core.typing import DataSource, VariableSpec, OrderSpec
 
 
@@ -473,6 +473,7 @@ class Plotter:
         self._legend_contents: list[
             tuple[str, str | int], list[Artist], list[str],
         ] = []
+        self._scales: dict[str, Scale] = {}
 
     def save(self, fname, **kwargs) -> Plotter:
         # TODO type fname as string or path; handle Path objects if matplotlib can't
@@ -623,11 +624,12 @@ class Plotter:
 
     def _transform_coords(self, p: Plot) -> None:
 
-        prop = Coordinate()
-
         for var in (v for v in p._variables if v[0] in "xy"):
 
+            prop = Coordinate(var[0])
+
             # Parse name to identify variable (x, y, xmin, etc.) and axis (x/y)
+            # TODO should we have xmin0/xmin1 or x0min/x1min?
             m = re.match(r"^(?P<prefix>(?P<axis>[x|y])\d*).*", var)
             prefix = m["prefix"]
             axis = m["axis"]
@@ -651,7 +653,15 @@ class Plotter:
             # This is unnecessarily wasteful, as layer data will often be redundant.
             # But figuring out the minimal amount we need is more complicated.
             cols = [var, "col", "row"]
-            layer_values = [x["data"].frame.filter(cols) for x in self._layers]
+            # TODO basically copied from _setup_scales, and very clumsy
+            layer_values = [self._data.frame.filter(cols)]
+            for layer in self._layers:
+                if layer["data"].frame is None:
+                    for df in layer["data"].frames.values():
+                        layer_values.append(df.filter(cols))
+                else:
+                    layer_values.append(layer["data"].frame.filter(cols))
+
             if layer_values:
                 var_df = pd.concat(layer_values, ignore_index=True)
             else:
@@ -662,6 +672,11 @@ class Plotter:
             # And then scale the data in each layer.
             scale = self._get_scale(p, prefix, prop, var_df[var])
             subplots = [sp for sp in self._subplots if sp[axis] == prefix]
+
+            # Setup the scale on all of the data and plug it into self._scales
+            # We do this because by the time we do self._setup_scales, coordinate data
+            # will have been converted to floats already, so scale inference fails
+            self._scales[var] = scale.setup(var_df[var], prop)
 
             # Set up an empty series to receive the transformed values.
             # We need this to handle piecemeal tranforms of categories -> floats.
@@ -752,8 +767,9 @@ class Plotter:
                 scales = {}
                 for axis in "xy":
                     if axis in df:
-                        scale = self._get_scale(spec, axis, Coordinate(), df[axis])
-                        scales[axis] = scale.setup(df[axis], Coordinate())
+                        prop = Coordinate(axis)
+                        scale = self._get_scale(spec, axis, prop, df[axis])
+                        scales[axis] = scale.setup(df[axis], prop)
                 orient = layer["orient"] or mark._infer_orient(scales)
 
                 if stat.group_by_orient:
@@ -776,6 +792,9 @@ class Plotter:
             arg = spec._scales[var]
             if isinstance(arg, ScaleSpec):
                 scale = arg
+            elif arg is None:
+                # TODO identity scale
+                scale = arg
             else:
                 scale = prop.infer_scale(arg, values)
         else:
@@ -796,9 +815,11 @@ class Plotter:
             else:
                 variables.update(layer["data"].frame.columns)
 
-        self._scales = {}
-
         for var in variables:
+
+            if var in self._scales:
+                # Scales for coordinate variables added in _transform_coords
+                continue
 
             # Get the data all the distinct appearances of this variable.
             if var in self._data:
@@ -830,7 +851,14 @@ class Plotter:
             # Initialize the data-dependent parameters of the scale
             # Note that this returns a copy and does not mutate the original
             # This dictionary is used by the semantic mappings
-            self._scales[var] = scale.setup(var_values, prop)
+            if scale is None:
+                # TODO what is the cleanest way to implement identity scale?
+                # We don't really need a ScaleSpec, and Identity() will be
+                # overloaded anyway (but maybe a general Identity object
+                # that can be used as Scale/Mark/Stat/Move?)
+                self._scales[var] = Scale([], [], None, "identity", None)
+            else:
+                self._scales[var] = scale.setup(var_values, prop)
 
     def _plot_layer(self, p: Plot, layer: dict[str, Any]) -> None:
 
@@ -968,9 +996,9 @@ class Plotter:
                     subplots.append(sub)
 
             if data.frame is None:
-                out_df = data.frames[(x, y)]
+                out_df = data.frames[(x, y)].copy()
             elif not pair_variables:
-                out_df = data.frame
+                out_df = data.frame.copy()
             else:
                 if data.frame is None:
                     out_df = data.frames[(x, y)].copy()
@@ -1077,7 +1105,12 @@ class Plotter:
         self, mark: Mark, data: PlotData, scales: dict[str, Scale]
     ) -> None:
         """Add legend artists / labels for one layer in the plot."""
-        legend_vars = data.frame.columns.intersection(scales)
+        if data.frame is None:
+            legend_vars = set()
+            for frame in data.frames.values():
+                legend_vars.update(frame.columns.intersection(scales))
+        else:
+            legend_vars = data.frame.columns.intersection(scales)
 
         # First pass: Identify the values that will be shown for each variable
         schema: list[tuple[
