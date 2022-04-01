@@ -330,14 +330,16 @@ class Plot:
         wrap: int | None = None,
     ) -> Plot:
 
+        # TODO don't allow col/row in the Plot constructor, require an explicit
+        # call the facet(). That makes things simpler!
+
         # Can't pass `None` here or it will disinherit the `Plot()` def
+        # TODO less complex if we don't allow col/row in Plot()
         variables = {}
         if col is not None:
             variables["col"] = col
         if row is not None:
             variables["row"] = row
-
-        # TODO raise when wrap is specified with both col and row?
 
         col_order = row_order = None
         if isinstance(order, dict):
@@ -348,8 +350,6 @@ class Plot:
             if row_order is not None:
                 row_order = list(row_order)
         elif order is not None:
-            # TODO Allow order: list here when single facet var defined in constructor?
-            # Thinking I'd rather not at this point; rather at general .order method?
             if col is not None:
                 col_order = list(order)
             if row is not None:
@@ -429,11 +429,18 @@ class Plot:
         # One downside is that it might make debugging a little harder.
 
         plotter = Plotter(pyplot=pyplot)
-        plotter._setup_data(self)
-        plotter._setup_figure(self)
-        plotter._transform_coords(self)
+
+        layers = plotter._setup_data(self)
+
+        plotter._setup_figure(self, layers)
+
+        # TODO Remove this after updating other methods
+        plotter._layers = layers
+
+        plotter._transform_coords(self, layers)
         plotter._compute_stats(self)
         plotter._setup_scales(self)
+
         # plotter._move_marks(self)  # TODO just do this as part of _plot_layer?
 
         for layer in plotter._layers:
@@ -527,7 +534,7 @@ class Plotter:
 
     def _setup_data(self, p: Plot) -> None:
 
-        self._data = (
+        common = (
             p._data
             .join(
                 p._facetspec.get("source"),
@@ -539,16 +546,16 @@ class Plotter:
             )
         )
 
-        # TODO join with mapping spec
         # TODO use TypedDict for _layers
-        self._layers: list[dict] = []
+        layers = []
         for layer in p._layers:
-            self._layers.append({
-                "data": self._data.join(layer.get("source"), layer.get("vars")),
-                **layer,
+            layers.append({
+                "data": common.join(layer.get("source"), layer.get("vars")), **layer,
             })
 
-    def _setup_figure(self, p: Plot) -> None:
+        return layers
+
+    def _setup_figure(self, p: Plot, layers: list[dict]) -> None:
 
         # --- Parsing the faceting/pairing parameterization to specify figure grid
 
@@ -556,12 +563,14 @@ class Plotter:
         # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
         self._subplots = subplots = Subplots(
-            p._subplotspec, p._facetspec, p._pairspec, self._data,
+            p._subplotspec, p._facetspec, p._pairspec,
         )
 
         # --- Figure initialization
         figure_kws = {"figsize": getattr(p, "_figsize", None)}  # TODO fix
-        self._figure = subplots.init_figure(self.pyplot, figure_kws, p._target)
+        self._figure = subplots.init_figure(
+            p._facetspec, p._pairspec, self.pyplot, figure_kws, p._target,
+        )
 
         # --- Figure annotation
         for sub in subplots:
@@ -573,8 +582,7 @@ class Plotter:
                 # although the alignments of the labels from that method leaves
                 # something to be desired (in terms of how it defines 'centered').
                 names = [
-                    self._data.names.get(axis_key),
-                    *[layer["data"].names.get(axis_key) for layer in self._layers],
+                    layer["data"].names.get(axis_key) for layer in layers
                 ]
                 label = next((name for name in names if name is not None), None)
                 ax.set(**{f"{axis}label": label})
@@ -623,7 +631,7 @@ class Plotter:
                 title_text = ax.set_title(title)
                 title_text.set_visible(show_title)
 
-    def _transform_coords(self, p: Plot) -> None:
+    def _transform_coords(self, p: Plot, layers: list[dict]) -> None:
 
         for var in (v for v in p._variables if v[0] in "xy"):
 
