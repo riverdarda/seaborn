@@ -37,7 +37,7 @@ class Subplots:
         pair_spec: dict,
     ):
 
-        self.subplot_spec = subplot_spec.copy()
+        self.subplot_spec = subplot_spec
 
         self._check_dimension_uniqueness(facet_spec, pair_spec)
         self._determine_grid_dimensions(facet_spec, pair_spec)
@@ -48,7 +48,11 @@ class Subplots:
         """Reject specs that pair and facet on (or wrap to) same figure dimension."""
         err = None
 
-        if facet_spec.get("wrap") and {"col", "row"} <= set(facet_spec):
+        facet_vars = facet_spec.get("variables", [])
+        pair_vars = pair_spec.get("variables", [])
+        print(facet_vars, pair_vars)
+
+        if facet_spec.get("wrap") and {"col", "row"} <= set(facet_vars):
             err = "Cannot wrap facets when specifying both `col` and `row`."
         elif (
             pair_spec.get("wrap")
@@ -60,13 +64,13 @@ class Subplots:
 
         collisions = {"x": ["columns", "rows"], "y": ["rows", "columns"]}
         for pair_axis, (multi_dim, wrap_dim) in collisions.items():
-            if pair_axis not in pair_spec:
+            if pair_axis not in pair_vars:
                 continue
-            elif multi_dim[:3] in facet_spec:
+            elif multi_dim[:3] in facet_vars:
                 err = f"Cannot facet the {multi_dim} while pairing on `{pair_axis}``."
-            elif wrap_dim[:3] in facet_spec and facet_spec.get("wrap"):
+            elif wrap_dim[:3] in facet_vars and facet_spec.get("wrap"):
                 err = f"Cannot wrap the {wrap_dim} while pairing on `{pair_axis}``."
-            elif wrap_dim[:3] in facet_spec and pair_spec.get("wrap"):
+            elif wrap_dim[:3] in facet_vars and pair_spec.get("wrap"):
                 err = f"Cannot wrap the {multi_dim} while faceting the {wrap_dim}."
 
         if err is not None:
@@ -77,9 +81,10 @@ class Subplots:
         self.grid_dimensions = {}
         for dim, axis in zip(["col", "row"], ["x", "y"]):
 
-            if dim in facet_spec:
+            facet_vars = facet_spec.get("variables", {})
+            if dim in facet_vars:
                 self.grid_dimensions[dim] = categorical_order(
-                    facet_spec[dim], facet_spec.get(f"{dim}_order"),
+                    facet_spec.get(f"{dim}_data", []), facet_spec.get(f"{dim}_order"),
                 )
             elif axis in pair_spec:
                 self.grid_dimensions[dim] = [None for _ in pair_spec[axis]]

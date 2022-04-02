@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import itertools
 from collections import abc
@@ -302,10 +303,6 @@ class Plot:
         for axis in "xy":
             keys = []
             for i, col in enumerate(pairspec.get(axis, [])):
-                # TODO note that this assumes no variables are defined as {axis}{digit}
-                # This could be a slight problem as matplotlib occasionally uses that
-                # format for artists that take multiple parameters on each axis.
-                # Perhaps we should set the internal pair variables to "_{axis}{index}"?
                 key = f"{axis}{i}"
                 keys.append(key)
                 pairspec["variables"][key] = col
@@ -430,20 +427,21 @@ class Plot:
 
         plotter = Plotter(pyplot=pyplot)
 
-        layers = plotter._setup_data(self)
+        common, layers = plotter._join_data(self)
 
-        plotter._setup_figure(self, layers)
+        plotter._setup_figure(self, common, layers)
 
-        # TODO Remove this after updating other methods
+        # TODO Remove these after updating other methods
+        plotter._data = common
         plotter._layers = layers
 
-        plotter._transform_coords(self, layers)
-        plotter._compute_stats(self)
-        plotter._setup_scales(self)
+        plotter._transform_coords(self, common, layers)
+        plotter._compute_stats(self, layers)
+        plotter._setup_scales(self, layers)
 
         # plotter._move_marks(self)  # TODO just do this as part of _plot_layer?
 
-        for layer in plotter._layers:
+        for layer in layers:
             plotter._plot_layer(self, layer)
 
         # TODO should this go here?
@@ -485,7 +483,7 @@ class Plotter:
     def save(self, fname, **kwargs) -> Plotter:
         # TODO type fname as string or path; handle Path objects if matplotlib can't
         kwargs.setdefault("dpi", 96)
-        self._figure.savefig(fname, **kwargs)
+        self._figure.savefig(os.path.expanduser(fname), **kwargs)
         return self
 
     def show(self, **kwargs) -> None:
@@ -532,18 +530,12 @@ class Plotter:
         metadata = {"width": w * dpi * scaling, "height": h * dpi * scaling}
         return data, metadata
 
-    def _setup_data(self, p: Plot) -> None:
+    def _join_data(self, p: Plot) -> tuple[PlotData, list[dict]]:
 
         common = (
             p._data
-            .join(
-                p._facetspec.get("source"),
-                p._facetspec.get("variables"),
-            )
-            .join(
-                p._pairspec.get("source"),
-                p._pairspec.get("variables"),
-            )
+            .join(None, p._facetspec.get("variables"))
+            .join(None, p._pairspec.get("variables"))
         )
 
         # TODO use TypedDict for _layers
@@ -553,23 +545,34 @@ class Plotter:
                 "data": common.join(layer.get("source"), layer.get("vars")), **layer,
             })
 
-        return layers
+        return common, layers
 
-    def _setup_figure(self, p: Plot, layers: list[dict]) -> None:
+    def _setup_figure(self, p: Plot, common: PlotData, layers: list[dict]) -> None:
 
         # --- Parsing the faceting/pairing parameterization to specify figure grid
 
         # TODO use context manager with theme that has been set
         # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
-        self._subplots = subplots = Subplots(
-            p._subplotspec, p._facetspec, p._pairspec,
-        )
+        subplotspec = p._subplotspec.copy()
+        facetspec = p._facetspec.copy()
+        pairspec = p._pairspec.copy()
+
+        for dim in ["col", "row"]:
+            if dim in common.frame:
+                key = f"{dim}_order"
+                facetspec[key] = categorical_order(
+                    common.frame[dim], facetspec.get(key)
+                )
+                facetspec[f"{dim}_name"] = common.names[dim]
+                facetspec[f"{dim}_data"] = common.frame[dim]
+
+        self._subplots = subplots = Subplots(subplotspec, facetspec, pairspec)
 
         # --- Figure initialization
         figure_kws = {"figsize": getattr(p, "_figsize", None)}  # TODO fix
         self._figure = subplots.init_figure(
-            p._facetspec, p._pairspec, self.pyplot, figure_kws, p._target,
+            facetspec, pairspec, self.pyplot, figure_kws, p._target,
         )
 
         # --- Figure annotation
@@ -582,7 +585,8 @@ class Plotter:
                 # although the alignments of the labels from that method leaves
                 # something to be desired (in terms of how it defines 'centered').
                 names = [
-                    layer["data"].names.get(axis_key) for layer in layers
+                    common.names.get(axis_key),
+                    *(layer["data"].names.get(axis_key) for layer in layers)
                 ]
                 label = next((name for name in names if name is not None), None)
                 ax.set(**{f"{axis}label": label})
@@ -599,7 +603,7 @@ class Plotter:
                 axis_obj.get_label().set_visible(show_axis_label)
                 show_tick_labels = (
                     show_axis_label
-                    or p._subplotspec.get(f"share{axis}") not in (
+                    or subplotspec.get(f"share{axis}") not in (
                         True, "all", {"x": "col", "y": "row"}[axis]
                     )
                 )
@@ -607,14 +611,15 @@ class Plotter:
                 plt.setp(axis_obj.get_minorticklabels(), visible=show_tick_labels)
 
             # TODO title template should be configurable
-            # TODO Also we want right-side titles for row facets in most cases
+            # ---- Also we want right-side titles for row facets in most cases?
+            # ---- Or wrapped? That can get annoying too.
             # TODO should configure() accept a title= kwarg (for single subplot plots)?
             # Let's have what we currently call "margin titles" but properly using the
             # ax.set_title interface (see my gist)
             title_parts = []
             for dim in ["row", "col"]:
                 if sub[dim] is not None:
-                    name = self._data.names.get(dim, f"_{dim}_")
+                    name = facetspec.get(f"{dim}_name")
                     title_parts.append(f"{name} = {sub[dim]}")
 
             has_col = sub["col"] is not None
@@ -631,9 +636,11 @@ class Plotter:
                 title_text = ax.set_title(title)
                 title_text.set_visible(show_title)
 
-    def _transform_coords(self, p: Plot, layers: list[dict]) -> None:
+    def _transform_coords(self, p: Plot, common: PlotData, layers: list[dict]) -> None:
 
-        for var in (v for v in p._variables if v[0] in "xy"):
+        variables = [v for v in p._variables if v[0] in "xy"]
+
+        for var in variables:
 
             prop = Coordinate(var[0])
 
@@ -663,8 +670,8 @@ class Plotter:
             # But figuring out the minimal amount we need is more complicated.
             cols = [var, "col", "row"]
             # TODO basically copied from _setup_scales, and very clumsy
-            layer_values = [self._data.frame.filter(cols)]
-            for layer in self._layers:
+            layer_values = [common.frame.filter(cols)]
+            for layer in layers:
                 if layer["data"].frame is None:
                     for df in layer["data"].frames.values():
                         layer_values.append(df.filter(cols))
@@ -691,7 +698,7 @@ class Plotter:
             # We need this to handle piecemeal tranforms of categories -> floats.
             transformed_data = [
                 pd.Series(dtype=float, index=layer["data"].frame.index, name=var)
-                for layer in self._layers
+                for layer in layers
             ]
 
             for subplot in subplots:
@@ -717,7 +724,7 @@ class Plotter:
 
                 transform = scale.setup(seed_values, prop, axis=axis_obj)
 
-                for layer, new_series in zip(self._layers, transformed_data):
+                for layer, new_series in zip(layers, transformed_data):
                     layer_df = layer["data"].frame
                     if var in layer_df:
                         idx = self._get_subplot_index(layer_df, subplot)
@@ -727,19 +734,19 @@ class Plotter:
                 set_scale_obj(subplot["ax"], axis, transform.matplotlib_scale)
 
             # Now the transformed data series are complete, set update the layer data
-            for layer, new_series in zip(self._layers, transformed_data):
+            for layer, new_series in zip(layers, transformed_data):
                 layer_df = layer["data"].frame
                 if var in layer_df:
                     layer_df[var] = new_series
 
-    def _compute_stats(self, spec: Plot) -> None:
+    def _compute_stats(self, spec: Plot, layers: list[dict]) -> None:
 
         grouping_vars = [v for v in PROPERTIES if v not in "xy"]
         grouping_vars += ["col", "row", "group"]
 
         pair_vars = spec._pairspec.get("structure", {})
 
-        for layer in self._layers:
+        for layer in layers:
 
             data = layer["data"]
             mark = layer["mark"]
@@ -811,9 +818,7 @@ class Plotter:
 
         return scale
 
-    def _setup_scales(self, p: Plot) -> None:
-
-        layers = self._layers
+    def _setup_scales(self, p: Plot, layers: list[dict]) -> None:
 
         # Identify all of the variables that will be used at some point in the plot
         variables = set()
@@ -831,16 +836,13 @@ class Plotter:
                 continue
 
             # Get the data all the distinct appearances of this variable.
-            if var in self._data:
-                parts = [self._data.frame.get(var)]
-            else:
-                parts = []
-                for layer in layers:
-                    if layer["data"].frame is None:
-                        for df in layer["data"].frames.values():
-                            parts.append(df.get(var))
-                    else:
-                        parts.append(layer["data"].frame.get(var))
+            parts = []
+            for layer in layers:
+                if layer["data"].frame is None:
+                    for df in layer["data"].frames.values():
+                        parts.append(df.get(var))
+                else:
+                    parts.append(layer["data"].frame.get(var))
             var_values = pd.concat(
                 parts, axis=0, join="inner", ignore_index=True
             ).rename(var)

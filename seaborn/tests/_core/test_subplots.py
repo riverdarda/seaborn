@@ -12,7 +12,7 @@ class TestSpecificationChecks:
 
         err = "Cannot wrap facets when specifying both `col` and `row`."
         with pytest.raises(RuntimeError, match=err):
-            Subplots({}, {"wrap": 3, "col": "a", "row": "b"}, {})
+            Subplots({}, {"wrap": 3, "variables": {"col": "a", "row": "b"}}, {})
 
     def test_cartesian_xy_pairing_and_wrap(self):
 
@@ -24,13 +24,13 @@ class TestSpecificationChecks:
 
         err = "Cannot facet the columns while pairing on `x`."
         with pytest.raises(RuntimeError, match=err):
-            Subplots({}, {"col": "a"}, {"x": ["x", "y"]})
+            Subplots({}, {"variables": {"col": "a"}}, {"x": ["x", "y"]})
 
     def test_wrapped_columns_and_y_pairing(self):
 
         err = "Cannot wrap the columns while pairing on `y`."
         with pytest.raises(RuntimeError, match=err):
-            Subplots({}, {"wrap": 2, "col": "a"}, {"y": ["x", "y"]})
+            Subplots({}, {"wrap": 2, "variables": {"col": "a"}}, {"y": ["x", "y"]})
 
     def test_wrapped_x_pairing_and_facetd_rows(self):
 
